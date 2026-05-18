@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip list *)",
+      "Bash(python -c \"import NewareNDA; print\\('NewareNDA OK'\\)\")",
+      "Bash(python -c \"import pandas; print\\('pandas OK'\\)\")",
+      "Bash(python -c \"import openpyxl; print\\('openpyxl OK'\\)\")",
+      "Bash(python -c \"import PyQt6; print\\('PyQt6 OK'\\)\")",
+      "Bash(python -c ' *)"
+    ]
+  }
+}
