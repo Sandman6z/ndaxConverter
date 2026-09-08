@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ndax-converter"
+version = "0.1.0"
+description = "NDAX battery test data to XLSX batch converter"
+requires-python = ">=3.10"
+dependencies = [
+    "NewareNDA>=2026.2.2",
+    "pandas>=2.2.0,<3.0.0",
+    "xlsxwriter>=3.1.0,<4.0.0",
+    "PyQt6>=6.8.0,<7.0.0",
+    "numpy>=2.0.0,<3.0.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["engine*", "ui*"]

@@ -1,0 +1,9 @@
+{"id":"0001","speaker":"DeepSeek","phase":"Round 1","title":null,"summary":"从系统架构角度分析Nuitka和PyInstaller的优劣，重点考虑依赖管理、跨平台支持和性能优化","path":"entries\\0001-deepseek-round_1.md","timestamp":"2026-09-08T07:21:32.305Z"}
+{"id":"0002","speaker":"GPT","phase":"Round 1","title":null,"summary":"从技术发展趋势和生态系统成熟度角度分析，考虑长期可维护性和创新潜力","path":"entries\\0002-gpt-round_1.md","timestamp":"2026-09-08T07:22:10.227Z"}
+{"id":"0003","speaker":"GLM","phase":"Round 1","title":null,"summary":"从实际部署和维护角度分析，考虑学习曲线、社区支持、文档质量和工具链成熟度","path":"entries\\0003-glm-round_1.md","timestamp":"2026-09-08T07:22:47.663Z"}
+{"id":"0004","speaker":"MiniMax","phase":"Round 1","title":null,"summary":"从创造性横向思维角度，探索非传统解决方案和混合打包策略","path":"entries\\0004-minimax-round_1.md","timestamp":"2026-09-08T07:23:33.860Z"}
+{"id":"0005","speaker":"User","phase":"Feedback after Round 1","title":null,"summary":"新增问题：如果未来要和battery-analysis工程合并，有哪些需要注意的点","path":"entries\\0005-user-feedback_after_round_1.md","timestamp":"2026-09-08T07:30:43.530Z"}
+{"id":"0006","speaker":"DeepSeek","phase":"Round 2","title":null,"summary":"从系统架构角度分析ndaxConverter与battery-analysis合并的关键技术挑战和解决方案","path":"entries\\0006-deepseek-round_2.md","timestamp":"2026-09-08T07:32:27.421Z"}
+{"id":"0007","speaker":"GPT","phase":"Round 2","title":null,"summary":"从技术趋势角度分析项目合并的长期演进策略和生态系统整合","path":"entries\\0007-gpt-round_2.md","timestamp":"2026-09-08T07:33:26.224Z"}
+{"id":"0008","speaker":"GLM","phase":"Round 2","title":null,"summary":"从实用性角度分析项目合并的实际部署、用户迁移和功能整合策略","path":"entries\\0008-glm-round_2.md","timestamp":"2026-09-08T07:34:26.977Z"}
+{"id":"0009","speaker":"MiniMax","phase":"Round 2","title":null,"summary":"从创造性角度提出项目合并的创新架构方案和渐进式整合策略","path":"entries\\0009-minimax-round_2.md","timestamp":"2026-09-08T07:36:00.182Z"}

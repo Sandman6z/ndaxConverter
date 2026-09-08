@@ -1,5 +1,0 @@
-NewareNDA>=2026.2.2
-pandas>=2.0
-openpyxl>=3.1
-PyQt6>=6.5
-numpy>=1.24

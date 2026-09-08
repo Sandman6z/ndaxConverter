@@ -1,46 +1,36 @@
-from pathlib import Path
-import numpy as np
-import NewareNDA as nda
-import pandas as pd
-from openpyxl import Workbook
-from openpyxl.styles import Alignment
+from __future__ import annotations
 
-STATUS_MAP = {
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
+from typing import Any
+
+import NewareNDA as nda
+import numpy as np
+import pandas as pd
+import xlsxwriter
+
+# Status mapping from NewareNDA to Chinese display names
+STATUS_MAP: dict[str, str] = {
     "Rest": "搁置",
     "CC_DChg": "恒流放电",
     "Pulse": "脉冲",
 }
 
-# In the Record sheet, Pulse rows display as 搁置 (matching BTSDA behavior)
-RECORD_STATUS_MAP = {
-    "Rest": "搁置",
-    "CC_DChg": "恒流放电",
-    "Pulse": "搁置",
-}
-
-HEADER_FILENAME_COL = 1
-
 RECORD_HEADERS = ["循环序号", "工步类型", "电流(A)", "电压(V)", "容量(mAh)"]
 STEP_HEADERS = ["循环序号", "工步类型", "容量(mAh)"]
 CYCLE_HEADERS = ["循环序号", "起始绝对时间(hh:mm:ss)", "结束绝对时间(hh:mm:ss)", "放电容量(mAh)"]
 
-COL_WIDTHS = {
-    "Record": {"A": 10, "B": 10, "C": 10, "D": 10, "E": 10},
-    "Step": {"A": 10, "B": 10, "C": 10},
-    "Cycle": {"A": 10, "B": 23, "C": 23, "D": 14},
-}
 
-NUMBER_FORMATS = {
-    ("Record", 3): "0.000000000",
-    ("Record", 4): "0.0000",
-    ("Record", 5): "0.000000",
-    ("Step", 3): "0.000",
-    ("Cycle", 4): "0.000",
-}
+def _ts_str(ts: Any) -> str:
+    """Format a timestamp without microseconds and timezone offset.
 
+    Args:
+        ts: Timestamp object (pandas Timestamp or similar).
 
-def _ts_str(ts) -> str:
-    """Format a timestamp without microseconds and timezone offset."""
+    Returns:
+        Formatted string in 'YYYY-MM-DD HH:MM:SS' format.
+    """
     s = str(ts)
     # Chop microseconds and timezone
     idx = s.find(".")
@@ -55,31 +45,21 @@ def _ts_str(ts) -> str:
 
 
 def _get_ndax_files(input_dir: Path) -> list[Path]:
+    """Get all .ndax files in a directory, sorted by name."""
     return sorted(input_dir.glob("*.ndax"))
 
 
-def _write_sheet_header(ws, headers: list[str], filename: str):
-    ws.cell(1, 1, filename)
-    for i, h in enumerate(headers, 1):
-        ws.cell(2, i, h)
-
-
-def _build_record_sheet(wb: Workbook, name: str, df: pd.DataFrame, filename: str):
-    ws = wb.create_sheet(title=name)
-    _write_sheet_header(ws, RECORD_HEADERS, filename)
-
-    for col_letter, width in COL_WIDTHS["Record"].items():
-        ws.column_dimensions[col_letter].width = width
+def _build_record_sheet(wb: xlsxwriter.Workbook, df: pd.DataFrame, filename: str) -> None:
+    """Build the Record sheet with all individual data points."""
+    ws = wb.add_worksheet(name="Record")
+    ws.write_row(0, 0, [filename])
+    ws.write_row(1, 0, RECORD_HEADERS)
 
     cycles = df["Cycle"].values
-    steps = df["Status"].map(RECORD_STATUS_MAP).values
+    steps = df["Status"].map(STATUS_MAP).values
     currents = (df["Current(mA)"].values / 1000.0).round(9)
     voltages = df["Voltage"].values.round(4)
 
-    # Capacity formula varies by Status (matching BTSDA behavior):
-    #   CC_DChg → Discharge_Capacity (positive)
-    #   Pulse    → Charge - Discharge (net, can be negative)
-    #   Rest     → 0
     statuses = df["Status"].values
     chg = df["Charge_Capacity(mAh)"].values
     dchg = df["Discharge_Capacity(mAh)"].values
@@ -88,64 +68,53 @@ def _build_record_sheet(wb: Workbook, name: str, df: pd.DataFrame, filename: str
         np.where(statuses == "Pulse", chg - dchg, 0.0)
     ).round(6)
 
-    rows = zip(cycles, steps, currents, voltages, capacities)
-    for i, row_data in enumerate(rows, 3):
-        for j, val in enumerate(row_data, 1):
-            cell = ws.cell(i, j, val)
-            fmt = NUMBER_FORMATS.get(("Record", j))
-            if fmt:
-                cell.number_format = fmt
+    for i, row_data in enumerate(zip(cycles, steps, currents, voltages, capacities), start=2):
+        ws.write_row(i, 0, row_data)
 
 
-def _build_step_sheet(wb: Workbook, name: str, df: pd.DataFrame, filename: str):
-    ws = wb.create_sheet(title=name)
-    _write_sheet_header(ws, STEP_HEADERS, filename)
+def _build_step_sheet(wb: xlsxwriter.Workbook, df: pd.DataFrame, filename: str) -> None:
+    """Build the Step sheet with aggregated data per cycle+step."""
+    ws = wb.add_worksheet(name="Step")
+    ws.write_row(0, 0, [filename])
+    ws.write_row(1, 0, STEP_HEADERS)
 
-    for col_letter, width in COL_WIDTHS["Step"].items():
-        ws.column_dimensions[col_letter].width = width
-
-    row_idx = 3
-    for (cycle, step, status), grp in df.groupby(["Cycle", "Step", "Status"], sort=False):
+    row = 2
+    for (cycle, _step, status), grp in df.groupby(["Cycle", "Step", "Status"], sort=False):
         first = grp.iloc[0]
         last = grp.iloc[-1]
-        chg_delta = last["Charge_Capacity(mAh)"] - first["Charge_Capacity(mAh)"]
         dchg_delta = last["Discharge_Capacity(mAh)"] - first["Discharge_Capacity(mAh)"]
 
         if status == "CC_DChg":
             cap = dchg_delta
         else:
+            chg_delta = last["Charge_Capacity(mAh)"] - first["Charge_Capacity(mAh)"]
             cap = chg_delta - dchg_delta
 
-        ws.cell(row_idx, 1, cycle)
-        ws.cell(row_idx, 2, STATUS_MAP[status])
-        cell = ws.cell(row_idx, 3, round(float(cap), 3))
-        cell.number_format = "0.000"
-        row_idx += 1
+        ws.write_row(row, 0, [cycle, STATUS_MAP[status], round(float(cap), 3)])
+        row += 1
 
 
-def _build_cycle_sheet(wb: Workbook, name: str, df: pd.DataFrame, filename: str):
-    ws = wb.create_sheet(title=name)
-    _write_sheet_header(ws, CYCLE_HEADERS, filename)
+def _build_cycle_sheet(wb: xlsxwriter.Workbook, df: pd.DataFrame, filename: str) -> None:
+    """Build the Cycle sheet with aggregated data per cycle."""
+    ws = wb.add_worksheet(name="Cycle")
+    ws.write_row(0, 0, [filename])
+    ws.write_row(1, 0, CYCLE_HEADERS)
 
-    for col_letter, width in COL_WIDTHS["Cycle"].items():
-        ws.column_dimensions[col_letter].width = width
-
-    row_idx = 3
+    row = 2
     for cycle, grp in df.groupby("Cycle", sort=True):
         total_dchg = 0.0
         for _, step_grp in grp.groupby("Step", sort=True):
-            dchg_delta = (
+            total_dchg += (
                 step_grp["Discharge_Capacity(mAh)"].iloc[-1]
                 - step_grp["Discharge_Capacity(mAh)"].iloc[0]
             )
-            total_dchg += dchg_delta
-
-        ws.cell(row_idx, 1, cycle)
-        ws.cell(row_idx, 2, _ts_str(grp["Timestamp"].iloc[0]))
-        ws.cell(row_idx, 3, _ts_str(grp["Timestamp"].iloc[-1]))
-        cell = ws.cell(row_idx, 4, round(total_dchg, 3))
-        cell.number_format = "0.000"
-        row_idx += 1
+        ws.write_row(row, 0, [
+            cycle,
+            _ts_str(grp["Timestamp"].iloc[0]),
+            _ts_str(grp["Timestamp"].iloc[-1]),
+            round(total_dchg, 3),
+        ])
+        row += 1
 
 
 def convert_one(ndax_path: str | Path, xlsx_path: str | Path | None = None) -> str:
@@ -181,22 +150,22 @@ def convert_one(ndax_path: str | Path, xlsx_path: str | Path | None = None) -> s
         raise ValueError(f"Failed to parse {ndax_path}: {e}") from e
 
     filename = ndax_path.name
-    wb = Workbook()
-    wb.remove(wb.active)  # Remove default sheet
+    wb = xlsxwriter.Workbook(str(xlsx_path))
 
-    _build_cycle_sheet(wb, "Cycle", df, filename)
-    _build_step_sheet(wb, "Step", df, filename)
-    _build_record_sheet(wb, "Record", df, filename)
+    _build_cycle_sheet(wb, df, filename)
+    _build_step_sheet(wb, df, filename)
+    _build_record_sheet(wb, df, filename)
 
-    wb.save(str(xlsx_path))
+    wb.close()
     return str(xlsx_path)
 
 
-def convert_batch(input_dir: str | Path) -> dict:
-    """Convert all .ndax files in a directory.
+def convert_batch(input_dir: str | Path, max_workers: int | None = None) -> dict:
+    """Convert all .ndax files in a directory using parallel processes.
 
     Args:
         input_dir: Directory containing .ndax files.
+        max_workers: Number of parallel worker processes. Defaults to CPU count.
 
     Returns:
         {'success': [file...], 'skipped': [file...], 'failed': [(file, error)...]}
@@ -208,17 +177,30 @@ def convert_batch(input_dir: str | Path) -> dict:
 
     result: dict = {"success": [], "skipped": [], "failed": []}
 
+    pending = []
     for ndax_path in ndax_files:
         xlsx_path = out_dir / f"{ndax_path.stem}.xlsx"
         if xlsx_path.exists():
             result["skipped"].append(ndax_path.name)
-            continue
+        else:
+            pending.append((ndax_path, xlsx_path))
 
-        try:
-            convert_one(ndax_path, xlsx_path)
-            result["success"].append(ndax_path.name)
-        except Exception as e:
-            result["failed"].append((ndax_path.name, str(e)))
+    if not pending:
+        return result
+
+    max_workers = max_workers or os.cpu_count()
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        fut_map = {
+            executor.submit(convert_one, ndax_path, xlsx_path): ndax_path
+            for ndax_path, xlsx_path in pending
+        }
+        for future in as_completed(fut_map):
+            ndax_path = fut_map[future]
+            try:
+                future.result()
+                result["success"].append(ndax_path.name)
+            except Exception as e:
+                result["failed"].append((ndax_path.name, str(e)))
 
     return result
 

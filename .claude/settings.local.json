@@ -6,7 +6,20 @@
       "Bash(python -c \"import pandas; print\\('pandas OK'\\)\")",
       "Bash(python -c \"import openpyxl; print\\('openpyxl OK'\\)\")",
       "Bash(python -c \"import PyQt6; print\\('PyQt6 OK'\\)\")",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('engine/converter.py', doraise=True\\); print\\('converter.py: OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('ui/main_window.py', doraise=True\\); print\\('main_window.py: OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('main.py', doraise=True\\); print\\('main.py: OK'\\)\")",
+      "Bash(uv lock *)",
+      "Bash(uv sync *)",
+      "Bash(uv pip *)",
+      "Bash(where upx *)",
+      "Bash(curl -sL https://github.com/upx/upx/releases/download/v5.0.0/upx-5.0.0-win64.zip -o C:/Users/boe/AppData/Local/Temp/upx.zip)",
+      "Bash(unzip -o C:/Users/boe/AppData/Local/Temp/upx.zip -d C:/Users/boe/AppData/Local/Temp/upx_tmp)",
+      "Bash(cp \"C:/Users/boe/AppData/Local/Temp/upx_tmp/upx-5.0.0-win64/upx.exe\" /c/Users/boe/AppData/Local/Programs/Python/Python314/Scripts/)",
+      "Bash(upx --version)",
+      "Bash(uv run *)",
+      "Bash(pyinstaller build.spec)"
     ]
   }
 }
