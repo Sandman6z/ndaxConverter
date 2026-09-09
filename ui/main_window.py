@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QLabel,
 )
 
-from engine.converter import convert_batch, get_ndax_files
+from engine.converter import convert_batch, _get_ndax_files
 
 
 class ConvertWorker(QThread):
@@ -24,10 +24,9 @@ class ConvertWorker(QThread):
     log = pyqtSignal(str)
     finished_signal = pyqtSignal(dict)
 
-    def __init__(self, ndax_files: list[Path], out_dir: Path) -> None:
+    def __init__(self, ndax_files: list[Path]) -> None:
         super().__init__()
         self.ndax_files = ndax_files
-        self.out_dir = out_dir
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -36,37 +35,24 @@ class ConvertWorker(QThread):
 
     def run(self) -> None:
         """Execute the batch conversion process."""
-        # Build filename → row index mapping for status updates
         name_to_row: dict[str, int] = {
             p.name: i for i, p in enumerate(self.ndax_files)
         }
 
-        def on_skip(name: str) -> None:
+        def _emit_status(name: str, status: str, log_msg: str) -> None:
             row = name_to_row.get(name)
             if row is not None:
-                self.file_status.emit(row, "已跳过")
-            self.log.emit(f"⏭ {name} 已存在，跳过")
-
-        def on_success(name: str) -> None:
-            row = name_to_row.get(name)
-            if row is not None:
-                self.file_status.emit(row, "成功")
-            self.log.emit(f"✔ {name} 转换成功")
-
-        def on_fail(name: str, err: str) -> None:
-            row = name_to_row.get(name)
-            if row is not None:
-                self.file_status.emit(row, "失败")
-            self.log.emit(f"✘ {name} 转换失败: {err}")
+                self.file_status.emit(row, status)
+            self.log.emit(log_msg)
 
         input_dir = self.ndax_files[0].parent if self.ndax_files else Path(".")
 
         try:
             result = convert_batch(
                 input_dir,
-                on_skip=on_skip,
-                on_success=on_success,
-                on_fail=on_fail,
+                on_skip=lambda n: _emit_status(n, "已跳过", f"⏭ {n} 已存在，跳过"),
+                on_success=lambda n: _emit_status(n, "成功", f"✔ {n} 转换成功"),
+                on_fail=lambda n, e: _emit_status(n, "失败", f"✘ {n} 转换失败: {e}"),
                 is_cancelled=lambda: self._cancelled,
             )
         except Exception as e:
@@ -155,7 +141,7 @@ class MainWindow(QMainWindow):
         self.out_dir = self.input_dir.parent / "2_xlsx"
         self.edit_path.setText(str(self.input_dir))
 
-        self.ndax_files = [self.input_dir / p for p in get_ndax_files(folder)]
+        self.ndax_files = _get_ndax_files(self.input_dir)
         self._refresh_file_list()
         self.btn_start.setEnabled(len(self.ndax_files) > 0)
         self.log_area.clear()
@@ -196,7 +182,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setMaximum(len(self.ndax_files))
         self.progress_bar.setValue(0)
 
-        self.worker = ConvertWorker(self.ndax_files, self.out_dir)
+        self.worker = ConvertWorker(self.ndax_files)
         self.worker.file_status.connect(self._on_file_status)
         self.worker.log.connect(self.log_area.append)
         self.worker.finished_signal.connect(self._on_finished)
@@ -218,12 +204,10 @@ class MainWindow(QMainWindow):
         item = self.table.item(row, self.COL_STATUS)
         if item:
             item.setText(status)
-            # Color-code terminal statuses
             if status == "成功":
                 item.setForeground(Qt.GlobalColor.darkGreen)
             elif status == "失败":
                 item.setForeground(Qt.GlobalColor.red)
-        # Update progress bar on each completed file
         if status in ("成功", "失败", "已跳过"):
             self.progress_bar.setValue(self.progress_bar.value() + 1)
 
@@ -257,11 +241,3 @@ class MainWindow(QMainWindow):
 def _now() -> str:
     """Get current timestamp as formatted string."""
     return datetime.now().strftime("%Y-%m-%d %H:%M")
-
-
-def run() -> None:
-    """Launch the application (alternative entry point)."""
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
