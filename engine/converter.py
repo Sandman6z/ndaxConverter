@@ -14,16 +14,17 @@ import xlsxwriter
 STATUS_MAP: dict[str, str] = {
     "Rest": "搁置",
     "CC_DChg": "恒流放电",
+    "CC_Chg": "恒流充电",
+    "CV_Chg": "恒压充电",
+    "CV_DChg": "恒压放电",
     "Pulse": "脉冲",
 }
 
-RECORD_HEADERS = ["循环序号", "工步类型", "电流(A)", "电压(V)", "容量(mAh)"]
-STEP_HEADERS = ["循环序号", "工步类型", "容量(mAh)"]
-CYCLE_HEADERS = ["循环序号", "起始绝对时间(hh:mm:ss)", "结束绝对时间(hh:mm:ss)", "放电容量(mAh)"]
 
+# ---------- helpers ----------
 
 def _ts_str(ts: Any) -> str:
-    """Format a timestamp without microseconds and timezone offset.
+    """Format a timestamp as 'YYYY-MM-DD HH:MM:SS' (no microseconds/tz).
 
     Args:
         ts: Timestamp object (pandas Timestamp or similar).
@@ -31,17 +32,8 @@ def _ts_str(ts: Any) -> str:
     Returns:
         Formatted string in 'YYYY-MM-DD HH:MM:SS' format.
     """
-    s = str(ts)
-    # Chop microseconds and timezone
-    idx = s.find(".")
-    if idx != -1:
-        s = s[:idx]
-    # Remove +08:00 type timezone suffix
-    if "+" in s:
-        s = s[: s.rfind("+")]
-    elif "-" in s[10:]:  # only look after date portion for TZ
-        s = s[: s.rfind("-")]
-    return s
+    return pd.Timestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
 
 
 def _get_ndax_files(input_dir: Path) -> list[Path]:
@@ -56,7 +48,7 @@ def _build_record_sheet(wb: xlsxwriter.Workbook, df: pd.DataFrame, filename: str
     ws.write_row(1, 0, RECORD_HEADERS)
 
     cycles = df["Cycle"].values
-    steps = df["Status"].map(STATUS_MAP).values
+    steps = df["Status"].map(STATUS_MAP).fillna(df["Status"]).values
     currents = (df["Current(mA)"].values / 1000.0).round(9)
     voltages = df["Voltage"].values.round(4)
 
@@ -90,7 +82,8 @@ def _build_step_sheet(wb: xlsxwriter.Workbook, df: pd.DataFrame, filename: str) 
             chg_delta = last["Charge_Capacity(mAh)"] - first["Charge_Capacity(mAh)"]
             cap = chg_delta - dchg_delta
 
-        ws.write_row(row, 0, [cycle, STATUS_MAP[status], round(float(cap), 3)])
+        label = STATUS_MAP.get(status, status)
+        ws.write_row(row, 0, [cycle, label, round(float(cap), 3)])
         row += 1
 
 
