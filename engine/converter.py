@@ -3,12 +3,21 @@ from __future__ import annotations
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypedDict
 
 import NewareNDA as nda
 import numpy as np
 import pandas as pd
 import xlsxwriter
+
+
+# ---------- types ----------
+
+class ConvertResult(TypedDict):
+    """Result of a batch conversion."""
+    success: list[str]
+    skipped: list[str]
+    failed: list[tuple[str, str]]
 
 # Status mapping from NewareNDA to Chinese display names
 STATUS_MAP: dict[str, str] = {
@@ -19,6 +28,10 @@ STATUS_MAP: dict[str, str] = {
     "CV_DChg": "恒压放电",
     "Pulse": "脉冲",
 }
+
+RECORD_HEADERS = ["循环序号", "工步类型", "电流(A)", "电压(V)", "容量(mAh)"]
+STEP_HEADERS = ["循环序号", "工步类型", "容量(mAh)"]
+CYCLE_HEADERS = ["循环序号", "起始绝对时间(hh:mm:ss)", "结束绝对时间(hh:mm:ss)", "放电容量(mAh)"]
 
 
 # ---------- helpers ----------
@@ -93,19 +106,20 @@ def _build_cycle_sheet(wb: xlsxwriter.Workbook, df: pd.DataFrame, filename: str)
     ws.write_row(0, 0, [filename])
     ws.write_row(1, 0, CYCLE_HEADERS)
 
+    # Compute per-step discharge deltas, then sum per cycle
+    step_dchg = df.groupby(["Cycle", "Step"], sort=False)["Discharge_Capacity(mAh)"]
+    step_delta = step_dchg.transform(lambda x: x.iloc[-1] - x.iloc[0])
+    df = df.copy()
+    df["_dchg_delta"] = step_delta
+
     row = 2
     for cycle, grp in df.groupby("Cycle", sort=True):
-        total_dchg = 0.0
-        for _, step_grp in grp.groupby("Step", sort=True):
-            total_dchg += (
-                step_grp["Discharge_Capacity(mAh)"].iloc[-1]
-                - step_grp["Discharge_Capacity(mAh)"].iloc[0]
-            )
+        total_dchg = grp.groupby("Step", sort=False)["_dchg_delta"].first().sum()
         ws.write_row(row, 0, [
             cycle,
             _ts_str(grp["Timestamp"].iloc[0]),
             _ts_str(grp["Timestamp"].iloc[-1]),
-            round(total_dchg, 3),
+            round(float(total_dchg), 3),
         ])
         row += 1
 
@@ -143,7 +157,7 @@ def convert_one(ndax_path: str | Path, xlsx_path: str | Path | None = None) -> s
         raise ValueError(f"Failed to parse {ndax_path}: {e}") from e
 
     filename = ndax_path.name
-    wb = xlsxwriter.Workbook(str(xlsx_path))
+    wb = xlsxwriter.Workbook(str(xlsx_path), {'constant_memory': True})
 
     _build_cycle_sheet(wb, df, filename)
     _build_step_sheet(wb, df, filename)
@@ -153,12 +167,26 @@ def convert_one(ndax_path: str | Path, xlsx_path: str | Path | None = None) -> s
     return str(xlsx_path)
 
 
-def convert_batch(input_dir: str | Path, max_workers: int | None = None) -> dict:
+def convert_batch(
+    input_dir: str | Path,
+    max_workers: int | None = None,
+    *,
+    on_skip: Callable[[str], None] | None = None,
+    on_success: Callable[[str], None] | None = None,
+    on_fail: Callable[[str, str], None] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> ConvertResult:
     """Convert all .ndax files in a directory using parallel processes.
 
     Args:
         input_dir: Directory containing .ndax files.
         max_workers: Number of parallel worker processes. Defaults to CPU count.
+        on_skip: Optional callback(filename) when a file is skipped.
+        on_success: Optional callback(filename) when a file converts successfully.
+        on_fail: Optional callback(filename, error) when a file fails.
+        on_progress: Optional callback(current, total) after each file.
+        is_cancelled: Optional callback() returning True to abort.
 
     Returns:
         {'success': [file...], 'skipped': [file...], 'failed': [(file, error)...]}
@@ -168,32 +196,61 @@ def convert_batch(input_dir: str | Path, max_workers: int | None = None) -> dict
     out_dir = input_dir.parent / "2_xlsx"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    result: dict = {"success": [], "skipped": [], "failed": []}
+    result: ConvertResult = {"success": [], "skipped": [], "failed": []}
+    total = len(ndax_files)
+    done_count = 0
 
-    pending = []
+    # Phase 1: check existing
+    pending: list[tuple[Path, Path]] = []
     for ndax_path in ndax_files:
+        if is_cancelled and is_cancelled():
+            return result
+
         xlsx_path = out_dir / f"{ndax_path.stem}.xlsx"
         if xlsx_path.exists():
             result["skipped"].append(ndax_path.name)
+            done_count += 1
+            if on_skip:
+                on_skip(ndax_path.name)
+            if on_progress:
+                on_progress(done_count, total)
         else:
             pending.append((ndax_path, xlsx_path))
 
-    if not pending:
+    if not pending or (is_cancelled and is_cancelled()):
         return result
 
+    # Phase 2: parallel conversion
     max_workers = max_workers or os.cpu_count()
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    executor = ProcessPoolExecutor(max_workers=max_workers)
+    try:
         fut_map = {
             executor.submit(convert_one, ndax_path, xlsx_path): ndax_path
             for ndax_path, xlsx_path in pending
         }
         for future in as_completed(fut_map):
+            if is_cancelled and is_cancelled():
+                # Cancel remaining futures for faster shutdown
+                for f in fut_map:
+                    f.cancel()
+                break
+
             ndax_path = fut_map[future]
             try:
                 future.result()
                 result["success"].append(ndax_path.name)
+                if on_success:
+                    on_success(ndax_path.name)
             except Exception as e:
                 result["failed"].append((ndax_path.name, str(e)))
+                if on_fail:
+                    on_fail(ndax_path.name, str(e))
+
+            done_count += 1
+            if on_progress:
+                on_progress(done_count, total)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     return result
 
