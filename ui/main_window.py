@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -16,21 +14,19 @@ from PyQt6.QtWidgets import (
     QLabel,
 )
 
-from engine.converter import convert_one, get_ndax_files
+from engine.converter import convert_batch, _get_ndax_files
 
 
 class ConvertWorker(QThread):
     """Worker thread for batch NDAX conversion."""
 
-    progress = pyqtSignal(int, int)  # current, total
-    file_status = pyqtSignal(int, str)  # row_index, status_text
+    file_status = pyqtSignal(int, str)   # row_index, status_text
     log = pyqtSignal(str)
     finished_signal = pyqtSignal(dict)
 
-    def __init__(self, ndax_files: list[Path], out_dir: Path) -> None:
+    def __init__(self, ndax_files: list[Path]) -> None:
         super().__init__()
         self.ndax_files = ndax_files
-        self.out_dir = out_dir
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -39,66 +35,32 @@ class ConvertWorker(QThread):
 
     def run(self) -> None:
         """Execute the batch conversion process."""
-        total = len(self.ndax_files)
-        result: dict = {"success": [], "skipped": [], "failed": []}
-        done_count = 0
+        name_to_row: dict[str, int] = {
+            p.name: i for i, p in enumerate(self.ndax_files)
+        }
 
-        # Phase 1: check for existing xlsx files (sequential, fast)
-        pending = []
-        for i, ndax_path in enumerate(self.ndax_files):
-            if self._cancelled:
-                self.log.emit("⚠ 已取消转换")
-                self.finished_signal.emit(result)
-                return
+        def _emit_status(name: str, status: str, log_msg: str) -> None:
+            row = name_to_row.get(name)
+            if row is not None:
+                self.file_status.emit(row, status)
+            self.log.emit(log_msg)
 
-            xlsx_path = self.out_dir / f"{ndax_path.stem}.xlsx"
-            if xlsx_path.exists():
-                result["skipped"].append(ndax_path.name)
-                self.file_status.emit(i, "已跳过")
-                self.log.emit(f"⏭ {ndax_path.name} 已存在，跳过")
-                done_count += 1
-                self.progress.emit(done_count, total)
-            else:
-                pending.append((i, ndax_path, xlsx_path))
-                self.file_status.emit(i, "等待中...")
-
-        if not pending or self._cancelled:
-            self.finished_signal.emit(result)
-            return
-
-        # Phase 2: parallel conversion
-        for i, _, _ in pending:
-            self.file_status.emit(i, "转换中...")
-
-        max_workers = min(os.cpu_count() or 1, len(pending))
-        self.log.emit(f"⚡ 使用 {max_workers} 个进程并行转换 {len(pending)} 个文件")
+        input_dir = self.ndax_files[0].parent if self.ndax_files else Path(".")
 
         try:
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                fut_map = {
-                    executor.submit(convert_one, ndax_path, xlsx_path): (i, ndax_path.name)
-                    for i, ndax_path, xlsx_path in pending
-                }
-
-                for future in as_completed(fut_map):
-                    if self._cancelled:
-                        break
-
-                    i, name = fut_map[future]
-                    try:
-                        future.result()
-                        result["success"].append(name)
-                        self.file_status.emit(i, "成功")
-                        self.log.emit(f"✔ {name} 转换成功")
-                    except Exception as e:
-                        result["failed"].append((name, str(e)))
-                        self.file_status.emit(i, "失败")
-                        self.log.emit(f"✘ {name} 转换失败: {e}")
-
-                    done_count += 1
-                    self.progress.emit(done_count, total)
+            result = convert_batch(
+                input_dir,
+                on_skip=lambda n: _emit_status(n, "已跳过", f"⏭ {n} 已存在，跳过"),
+                on_success=lambda n: _emit_status(n, "成功", f"✔ {n} 转换成功"),
+                on_fail=lambda n, e: _emit_status(n, "失败", f"✘ {n} 转换失败: {e}"),
+                is_cancelled=lambda: self._cancelled,
+            )
         except Exception as e:
             self.log.emit(f"✘ 并行转换异常: {e}")
+            result = {"success": [], "skipped": [], "failed": []}
+
+        if self._cancelled:
+            self.log.emit("\u26a0 已取消转换")
 
         self.finished_signal.emit(result)
 
@@ -179,7 +141,7 @@ class MainWindow(QMainWindow):
         self.out_dir = self.input_dir.parent / "2_xlsx"
         self.edit_path.setText(str(self.input_dir))
 
-        self.ndax_files = [self.input_dir / p for p in get_ndax_files(folder)]
+        self.ndax_files = _get_ndax_files(self.input_dir)
         self._refresh_file_list()
         self.btn_start.setEnabled(len(self.ndax_files) > 0)
         self.log_area.clear()
@@ -220,15 +182,14 @@ class MainWindow(QMainWindow):
         self.progress_bar.setMaximum(len(self.ndax_files))
         self.progress_bar.setValue(0)
 
-        self.worker = ConvertWorker(self.ndax_files, self.out_dir)
-        self.worker.progress.connect(self._on_progress)
+        self.worker = ConvertWorker(self.ndax_files)
         self.worker.file_status.connect(self._on_file_status)
         self.worker.log.connect(self.log_area.append)
         self.worker.finished_signal.connect(self._on_finished)
         self.worker.start()
 
         self.btn_start.setText("■ 取消")
-        self.btn_start.clicked.disconnect()
+        self.btn_start.clicked.disconnect(self._start_convert)
         self.btn_start.clicked.connect(self._cancel_convert)
 
     def _cancel_convert(self) -> None:
@@ -238,22 +199,23 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(False)
         self.btn_start.setText("正在取消...")
 
-    def _on_progress(self, current: int, total: int) -> None:
-        """Handle progress updates from worker thread."""
-        self.progress_bar.setMaximum(total)
-        self.progress_bar.setValue(current)
-
     def _on_file_status(self, row: int, status: str) -> None:
         """Handle file status updates from worker thread."""
         item = self.table.item(row, self.COL_STATUS)
         if item:
             item.setText(status)
+            if status == "成功":
+                item.setForeground(Qt.GlobalColor.darkGreen)
+            elif status == "失败":
+                item.setForeground(Qt.GlobalColor.red)
+        if status in ("成功", "失败", "已跳过"):
+            self.progress_bar.setValue(self.progress_bar.value() + 1)
 
     def _on_finished(self, result: dict) -> None:
         """Handle conversion completion."""
         self._update_status_ui(False)
         self.btn_start.setText("▶ 开始转换")
-        self.btn_start.clicked.disconnect()
+        self.btn_start.clicked.disconnect(self._cancel_convert)
         self.btn_start.clicked.connect(self._start_convert)
         self._refresh_file_list()
 
@@ -279,11 +241,3 @@ class MainWindow(QMainWindow):
 def _now() -> str:
     """Get current timestamp as formatted string."""
     return datetime.now().strftime("%Y-%m-%d %H:%M")
-
-
-def run() -> None:
-    """Launch the application (alternative entry point)."""
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())

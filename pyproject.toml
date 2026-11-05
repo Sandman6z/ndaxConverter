@@ -17,3 +17,9 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 include = ["engine*", "ui*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
